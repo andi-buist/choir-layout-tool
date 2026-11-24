@@ -3,3 +3,4 @@ pandas
 authlib
 httpx
 openpyxl
+jupyter
