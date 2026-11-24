@@ -1,5 +1,4 @@
-altair
+nicegui
 pandas
-streamlit
 authlib
 httpx
