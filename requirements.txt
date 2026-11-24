@@ -2,3 +2,4 @@ nicegui
 pandas
 authlib
 httpx
+openpyxl

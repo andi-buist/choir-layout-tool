@@ -1,0 +1,28 @@
+from dataclasses import dataclass, asdict
+from typing import List, Optional
+
+@dataclass
+class Singer:
+    id: str
+    name: str
+    voice_part: str
+
+    notes: str = None
+
+    spot_id: Optional[str] = None
+
+    locked: bool = False
+
+    row_pref: int = None
+    boundary_req: str = None
+
+    needs_chair: bool = False
+    hearing_req: bool = False
+
+@dataclass
+class StageSpot:
+    id: str
+    row: int
+    index: int
+    x: float
+    y: float

@@ -5,6 +5,7 @@ import json, math
 import zlib, struct, base64
 import time
 
+from src.dataclasses import Singer, StageSpot
 from src.components.files import FileUploader
 
 def make_blank_png(width=800, height=550, color=(0, 0, 0, 255)) -> str:
@@ -27,25 +28,6 @@ def make_blank_png(width=800, height=550, color=(0, 0, 0, 255)) -> str:
         + chunk(b"IEND", b"")
     )
     return "data:image/png;base64," + base64.b64encode(png).decode()
-
-@dataclass
-class Singer:
-    id: str
-    name: str
-    voice_part: str
-    needs_chair: bool = False
-    hearing_req: bool = False
-    boundary_req: str = "None"
-    locked: bool = False
-    spot_id: Optional[str] = None
-
-@dataclass
-class StageSpot:
-    id: str
-    row: int
-    index: int
-    x: float
-    y: float
 
 VOICE_COLORS = {
     "s1": "#ff6b6b",
@@ -146,7 +128,7 @@ class ChoirApp:
                 f'<circle cx="{x}" cy="{y}" r="18" fill="{color}" stroke="{stroke}" stroke-width="{sw}"/>'
             )
             elements.append(
-                f'<text x="{x}" y="{y+4}" fill="#111" font-size="11" font-weight="bold" text-anchor="middle">{s.name[:4]}</text>'
+                f'<text x="{x}" y="{y+4}" fill="#111" font-size="11" font-weight="bold" text-anchor="middle">{s.name[:1]}</text>'
             )
             if s.needs_chair:
                 elements.append(
@@ -342,18 +324,26 @@ class ChoirApp:
                             "Sop1 : Sop2",
                             "Sop2 : Baritone",
                             "Alto1 : Alto2",
-                            "Alto2 : Baritone",
+                            "Alto1 : Baritone",
                         ],
                         label="Boundary Req.",
                         value=s.boundary_req,
                         on_change=lambda e: setattr(s, "boundary_req", e.value),
                     ).classes("w-full")
+                    ui.textarea(
+                        "Notes",
+                        value=s.notes,
+                        on_change=lambda e: (
+                            setattr(s, "name", e.value),
+                            self.refresh(),
+                        ),
+                    ).classes("w-full")
                     ui.label(f"Spot: {s.spot_id or 'Pending'}").classes(
-                        "text-sm text-gray-400 mt-2"
+                        "text-sm text-gray-500 mt-2"
                     )
                 else:
                     ui.label("Nobody selected").classes(
-                        "text-sm text-gray-400 mt-2"
+                        "text-sm text-gray-500 mt-2"
                     )
 
         self.inspector = inspector_panel
