@@ -9,7 +9,7 @@ class Singer:
 
     notes: str = None
 
-    spot_id: Optional[str] = None
+    place_id: Optional[str] = None
 
     locked: bool = False
 
@@ -20,7 +20,7 @@ class Singer:
     hearing_req: bool = False
 
 @dataclass
-class StageSpot:
+class Place:
     id: str
     row: int
     index: int

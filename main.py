@@ -4,8 +4,9 @@ from typing import List, Optional
 import json, math
 import zlib, struct, base64
 import time
+import random
 
-from src.dataclasses import Singer, StageSpot
+from src.objects import Singer, Place
 from src.components.files import FileUploader
 
 def make_blank_png(width=800, height=550, color=(0, 0, 0, 255)) -> str:
@@ -30,35 +31,27 @@ def make_blank_png(width=800, height=550, color=(0, 0, 0, 255)) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 VOICE_COLORS = {
-    "s1": "#ff6b6b",
-    "s2": "#ff8787",
-    "a1": "#4dabf7",
-    "a2": "#339af0",
-    "b": "#51cf66"
+    "s1": "#ffc4c4",
+    "s2": "#ff3434",
+    "a1": "#0a91ff",
+    "a2": "#a3d6ff",
+    "b": "#23a338"
 }
 
 class ChoirApp:
-    MISSING_SPOTS = ["H01", "H15"]
+    MISSING_PLACES = ["H01", "H15"]
 
     def __init__(self):
         self.stage_w, self.stage_h = (800, 400)
 
-        self.spots = self._generate_stage()
-        self.singers = [
-            Singer("s1", "Person 1", "s1", spot_id="A01"),
-            Singer(
-                "s2", "Person 2", "s2", spot_id="B02"
-            ),
-            Singer("s3", "Person 3", "a1", needs_chair=True, spot_id="C03"),
-            Singer("s4", "Person 4", "a2", hearing_req=True, spot_id="D04"),
-            Singer("s5", "Person 5", "b", locked=True, spot_id="E05"),
-        ]
-        self.selected: Singer = self.singers[0]
+        self.places = self._generate_stage()
+        self.singers = []
+        self.selected: Singer = None
         self.dragging: Optional[Singer] = None
         self.drag_pos = (0.0, 0.0)
 
-    def _generate_stage(self, rows=9, per_row=15) -> List[StageSpot]:
-        spots = []
+    def _generate_stage(self, rows=9, per_row=15) -> List[Place]:
+        places = []
         start, end = math.radians(260), math.radians(280)
         half_angle = math.radians(10)  # Half of the 20-degree (260 to 280) span
 
@@ -78,28 +71,40 @@ class ChoirApp:
             radius = stage_radius + (r * row_depth)
 
             for i in range(per_row):
-                spot_name = f"{row_letter}{str(i+1).zfill(2)}"
+                place_name = f"{row_letter}{str(i+1).zfill(2)}"
 
-                if spot_name not in self.MISSING_SPOTS:
+                if place_name not in self.MISSING_PLACES:
                     theta = start + (i / (per_row - 1)) * (end - start)
 
-                    stage_spot = StageSpot(
-                        spot_name,
+                    stage_place = Place(
+                        place_name,
                         r,
                         i,
                         round(center_x + radius * math.cos(theta), 1),
                         round(center_y + radius * math.sin(theta), 1),
                     )
 
-                    spots.append(stage_spot)
-        return spots
+                    places.append(stage_place)
+        return places
 
+    def _assign_singers_to_places(self):
+        free_places = self.places.copy()
+
+        for s in self.singers:
+            if not s.locked:
+                this_place = free_places.pop(random.randint(0,len(free_places)-1))
+
+                s.place_id = this_place.id
+
+        self.refresh()
+
+    def _randomis
 
     def get_singer_xy(self, s: Singer, idx: int):
         if self.dragging and self.dragging.id == s.id:
             return self.drag_pos
-        spot = next((sp for sp in self.spots if sp.id == s.spot_id), None)
-        return (spot.x, spot.y) if spot else (50 + idx * 45, 40)
+        place = next((sp for sp in self.places if sp.id == s.place_id), None)
+        return (place.x, place.y) if place else (50 + idx * 45, 40)
 
     def build_svg(self) -> str:
         elements = []
@@ -107,8 +112,8 @@ class ChoirApp:
             f'<text x="{self.stage_w / 2}" y="{self.stage_h - 25}" fill="#9ca3af" font-size="38" font-weight="bold" text-anchor="middle">🎵</text>'
         )
 
-        # Draw spots
-        for sp in self.spots:
+        # Draw places
+        for sp in self.places:
             elements.append(
                 f'<circle cx="{sp.x}" cy="{sp.y}" r="16" fill="#1f2937" stroke="#4b5563" stroke-width="1.5"/>'
             )
@@ -162,23 +167,23 @@ class ChoirApp:
                 if math.hypot(mx - sx, my - sy) <= 28:
                     # Swap two singers
                     if self.selected and self.selected != s and not self.selected.locked and not s.locked:
-                        self.selected.spot_id, s.spot_id = s.spot_id, self.selected.spot_id
+                        self.selected.place_id, s.place_id = s.place_id, self.selected.place_id
                         self.selected = None  # Done, deselect
                     else:
                         self.selected = s  # Pick up / inspect
                     self.refresh()
                     return
 
-            # 2. Moving a Singer to an empty StageSpot
+            # 2. Moving a Singer to an empty Place
             if self.selected and not self.selected.locked:
-                closest = min(self.spots, key=lambda sp: math.hypot(mx - sp.x, my - sp.y), default=None)
+                closest = min(self.places, key=lambda sp: math.hypot(mx - sp.x, my - sp.y), default=None)
                 if closest and math.hypot(mx - closest.x, my - closest.y) <= 32:
-                    self.selected.spot_id = closest.id
+                    self.selected.place_id = closest.id
                     self.selected = None
                     self.refresh()
                     return
 
-            # 3. Didn't click a StageSpot, deselect
+            # 3. Didn't click a Place, deselect
             self.selected = None
             self.refresh()
             return
@@ -210,15 +215,15 @@ class ChoirApp:
             self.stage_view.content = self.build_svg()
 
         elif e.type == "pointerup" and self.dragging:
-            closest = min(self.spots, key=lambda sp: math.hypot(mx - sp.x, my - sp.y), default=None)
+            closest = min(self.places, key=lambda sp: math.hypot(mx - sp.x, my - sp.y), default=None)
             if closest and math.hypot(mx - closest.x, my - closest.y) < 45:
-                occupant = next((s for s in self.singers if s.spot_id == closest.id and s != self.dragging), None)
+                occupant = next((s for s in self.singers if s.place_id == closest.id and s != self.dragging), None)
                 if not occupant:
-                    self.dragging.spot_id = closest.id
+                    self.dragging.place_id = closest.id
                 elif not occupant.locked:
-                    occupant.spot_id, self.dragging.spot_id = self.dragging.spot_id, closest.id
+                    occupant.place_id, self.dragging.place_id = self.dragging.place_id, closest.id
             else:
-                self.dragging.spot_id = None
+                self.dragging.place_id = None
             self.dragging = None
             self.refresh()
 
@@ -227,20 +232,17 @@ class ChoirApp:
         await uploader.open_dialog()
         await uploader.dialog
 
-        data = uploader.data
+        self.singers = [Singer(**s) for s in uploader.data]
+        self.places = self._generate_stage()
 
-        self.singers = [Singer(**s) for s in data["singers"]]
-        self.spots = [StageSpot(**s) for s in data["spots"]]
+        self._assign_singers_to_places()
 
         self.refresh()
 
     def download_callback(self):
-        data = {
-            "singers": [asdict(s) for s in self.singers],
-            "spots": [asdict(sp) for sp in self.spots],
-        }
+        singers = [asdict(s) for s in self.singers]
 
-        ui.download(json.dumps(data, indent=2).encode(), "choir_layout.json")
+        ui.download(json.dumps(singers, indent=2).encode(), "singers.json")
 
     def refresh(self):
         self.stage_view.content = self.build_svg()
@@ -252,6 +254,7 @@ class ChoirApp:
         # 1. Header row with download/upload buttons
         with ui.row().classes("w-full items-center justify-center p-2"):
             ui.label("🎶 Choir Stage Planner").classes("text-2xl font-bold justify-center")
+            ui.button("Randomise", color="secondary", on_click=self._assign_singers_to_places)
             ui.button("Save", on_click=self.download_callback)
             ui.button("Load", on_click=self.upload_callback)
 
@@ -338,7 +341,7 @@ class ChoirApp:
                             self.refresh(),
                         ),
                     ).classes("w-full")
-                    ui.label(f"Spot: {s.spot_id or 'Pending'}").classes(
+                    ui.label(f"Place: {s.place_id or 'Pending'}").classes(
                         "text-sm text-gray-500 mt-2"
                     )
                 else:

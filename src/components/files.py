@@ -8,7 +8,7 @@ class FileUploader:
         self.data = None
     async def open_dialog(self):
         with ui.dialog() as self.dialog, ui.card():
-            ui.label("Upload your saved JSON file")
+            ui.label("Upload your list of singers")
             upload = ui.upload(
                 multiple=False,
                 max_files=1,
