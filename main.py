@@ -3,6 +3,7 @@ from dataclasses import dataclass, asdict
 from typing import List, Optional
 import json, math
 import zlib, struct, base64
+import time
 
 from src.components.files import FileUploader
 
@@ -159,6 +160,48 @@ class ChoirApp:
 
     def handle_pointer(self, e):
         mx, my = e.image_x, e.image_y
+
+        # Check pointer_type safely, or fall back to mobile User-Agent detection
+        pointer_type = getattr(e, "pointer_type", None)
+        if pointer_type is not None:
+            is_touch = pointer_type in ("touch", "pen")
+        else:
+            ua = e.client.request.headers.get("user-agent", "") if e.client and e.client.request else ""
+            is_touch = any(k in ua for k in ("Mobile", "Android", "iPhone", "iPad"))
+
+        # Mobile
+        if is_touch:
+            if e.type != "pointerdown":
+                return
+
+            # 1. Select a Singer
+            for idx, s in reversed(list(enumerate(self.singers))):
+                sx, sy = self.get_singer_xy(s, idx)
+                if math.hypot(mx - sx, my - sy) <= 28:
+                    # Swap two singers
+                    if self.selected and self.selected != s and not self.selected.locked and not s.locked:
+                        self.selected.spot_id, s.spot_id = s.spot_id, self.selected.spot_id
+                        self.selected = None  # Done, deselect
+                    else:
+                        self.selected = s  # Pick up / inspect
+                    self.refresh()
+                    return
+
+            # 2. Moving a Singer to an empty StageSpot
+            if self.selected and not self.selected.locked:
+                closest = min(self.spots, key=lambda sp: math.hypot(mx - sp.x, my - sp.y), default=None)
+                if closest and math.hypot(mx - closest.x, my - closest.y) <= 32:
+                    self.selected.spot_id = closest.id
+                    self.selected = None
+                    self.refresh()
+                    return
+
+            # 3. Didn't click a StageSpot, deselect
+            self.selected = None
+            self.refresh()
+            return
+
+        # Desktop
         if e.type == "pointerdown":
             for idx, s in reversed(list(enumerate(self.singers))):
                 sx, sy = self.get_singer_xy(s, idx)
@@ -167,45 +210,35 @@ class ChoirApp:
                     if not s.locked:
                         self.dragging = s
                         self.drag_pos = (sx, sy)
+                        self.last_move_time = 0.0
                     self.refresh()
-                    break
+                    return
+
+            # Clicked empty background
+            self.selected = None
+            self.refresh()
+
         elif e.type == "pointermove" and self.dragging:
+            # Throttle WebSocket redraws to max ~12 FPS (every 0.08s) so Render never lags
+            now = time.monotonic()
+            if now - self.last_move_time < 0.08:
+                return
+            self.last_move_time = now
             self.drag_pos = (mx, my)
             self.stage_view.content = self.build_svg()
+
         elif e.type == "pointerup" and self.dragging:
-            closest = min(
-                self.spots,
-                key=lambda sp: math.hypot(mx - sp.x, my - sp.y),
-                default=None,
-            )
+            closest = min(self.spots, key=lambda sp: math.hypot(mx - sp.x, my - sp.y), default=None)
             if closest and math.hypot(mx - closest.x, my - closest.y) < 45:
-                occupant = next(
-                    (
-                        s
-                        for s in self.singers
-                        if s.spot_id == closest.id and s != self.dragging
-                    ),
-                    None,
-                )
+                occupant = next((s for s in self.singers if s.spot_id == closest.id and s != self.dragging), None)
                 if not occupant:
                     self.dragging.spot_id = closest.id
                 elif not occupant.locked:
-                    occupant.spot_id, self.dragging.spot_id = (
-                        self.dragging.spot_id,
-                        closest.id,
-                    )
+                    occupant.spot_id, self.dragging.spot_id = self.dragging.spot_id, closest.id
             else:
                 self.dragging.spot_id = None
             self.dragging = None
             self.refresh()
-        elif e.type == "pointerup" and self.dragging is None:
-            clicked_singer = any(
-                math.hypot(mx - self.get_singer_xy(s, idx)[0], my - self.get_singer_xy(s, idx)[1]) <= 20
-                for idx, s in enumerate(self.singers)
-            )
-            if not clicked_singer:
-                self.selected = None
-                self.refresh()
 
     async def upload_callback(self):
         uploader = FileUploader()
@@ -250,6 +283,7 @@ class ChoirApp:
             )
             .props('draggable="false" ondragstart="return false;" style="width: full; height: auto;"')
             .classes("w-4/5 mx-auto border border-gray-700 rounded-lg select-none")
+            .on(type="pointer_move", throttle=0.2)
         )
         self.stage_view.content = self.build_svg()
 
