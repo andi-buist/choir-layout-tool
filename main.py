@@ -58,11 +58,13 @@ class ChoirApp:
     MISSING_SPOTS = ["H01", "H15"]
 
     def __init__(self):
+        self.stage_w, self.stage_h = (800, 400)
+
         self.spots = self._generate_stage()
         self.singers = [
             Singer("s1", "Person 1", "s1", spot_id="A01"),
             Singer(
-                "s2", "Person 2", "s2", boundary_req="Alto 1/Alto 2", spot_id="B02"
+                "s2", "Person 2", "s2", spot_id="B02"
             ),
             Singer("s3", "Person 3", "a1", needs_chair=True, spot_id="C03"),
             Singer("s4", "Person 4", "a2", hearing_req=True, spot_id="D04"),
@@ -75,14 +77,21 @@ class ChoirApp:
     def _generate_stage(self, rows=9, per_row=15) -> List[StageSpot]:
         spots = []
         start, end = math.radians(260), math.radians(280)
+        half_angle = math.radians(10)  # Half of the 20-degree (260 to 280) span
 
-        stage_radius = 1800
-        stage_offset = (0, stage_radius - 150)
-        row_depth = 36
+        pad = 35
+        # Scale radius so the width fits inside self.stage_w and height fits inside self.stage_h
+        max_r_by_width = ((self.stage_w / 2) - pad) / math.sin(half_angle)
+        row_depth = (self.stage_h - (pad * 2) - 55) / max(1, rows - 1)
+        stage_radius = min(1800, max_r_by_width - (rows - 1) * row_depth)
+
+        # Center horizontally at self.stage_w / 2, and anchor top row 'pad' pixels from top
+        center_x = self.stage_w / 2
+        outer_radius = stage_radius + ((rows - 1) * row_depth)
+        center_y = pad + outer_radius
 
         for r in range(rows):
             row_letter = chr(ord("A") + rows - (r + 1))
-
             radius = stage_radius + (r * row_depth)
 
             for i in range(per_row):
@@ -95,12 +104,13 @@ class ChoirApp:
                         spot_name,
                         r,
                         i,
-                        stage_offset[0] + round(400 + radius * math.cos(theta), 1),
-                        stage_offset[1] + round(540 + radius * math.sin(theta), 1),
+                        round(center_x + radius * math.cos(theta), 1),
+                        round(center_y + radius * math.sin(theta), 1),
                     )
 
                     spots.append(stage_spot)
         return spots
+
 
     def get_singer_xy(self, s: Singer, idx: int):
         if self.dragging and self.dragging.id == s.id:
@@ -109,9 +119,9 @@ class ChoirApp:
         return (spot.x, spot.y) if spot else (50 + idx * 45, 40)
 
     def build_svg(self) -> str:
-        elements = ['<rect width="800" height="550" fill="#111827" rx="8"/>']
+        elements = []
         elements.append(
-            '<text x="400" y="525" fill="#9ca3af" font-size="38" font-weight="bold" text-anchor="middle">🎵</text>'
+            f'<text x="{self.stage_w / 2}" y="{self.stage_h - 25}" fill="#9ca3af" font-size="38" font-weight="bold" text-anchor="middle">🎵</text>'
         )
 
         # Draw spots
@@ -188,9 +198,14 @@ class ChoirApp:
                 self.dragging.spot_id = None
             self.dragging = None
             self.refresh()
-        elif e.type == "mouseup":
-            self.selected = None
-            self.refresh()
+        elif e.type == "mouseup" and self.dragging is None:
+            clicked_singer = any(
+                math.hypot(mx - self.get_singer_xy(s, idx)[0], my - self.get_singer_xy(s, idx)[1]) <= 20
+                for idx, s in enumerate(self.singers)
+            )
+            if not clicked_singer:
+                self.selected = None
+                self.refresh()
 
     async def upload_callback(self):
         uploader = FileUploader()
@@ -225,31 +240,27 @@ class ChoirApp:
             ui.button("Save", on_click=self.download_callback)
             ui.button("Load", on_click=self.upload_callback)
 
-        # 2. Main region
-        with ui.row().classes("w-full no-wrap gap-6 p-2 justify-center"):
-
-            # 2.1. Stage editor
-            self.stage_view = (
-                ui.interactive_image(
-                    source=make_blank_png(800, 550),
-                    on_mouse=self.handle_mouse,
-                    events=["mousedown", "mousemove", "mouseup"],
-                    cross=False,
-                )
-                .props('draggable="false"')
-                .classes(
-                    "w-[800px] h-[550px] border border-gray-700 rounded-lg select-none"
-                )
+        # 2. Stage editor
+        self.stage_view = (
+            ui.interactive_image(
+                source=make_blank_png(800, 400),
+                on_mouse=self.handle_mouse,
+                events=["mousedown", "mousemove", "mouseup"],
+                cross=False,
             )
+            .props('draggable="false" ondragstart="return false;" style="width: full; height: auto;"')
+            .classes("w-4/5 mx-auto border border-gray-700 rounded-lg select-none")
+        )
+        self.stage_view.content = self.build_svg()
 
-            self.stage_view.content = self.build_svg()
+        # 3. Singer settings panel
+        @ui.refreshable
+        def inspector_panel():
+            with ui.card().classes("w-4/5 mx-auto p-4"):
+                ui.label("Singer").classes("text-lg font-bold")
+                s = self.selected
 
-            # 2.2. Singer settings panel
-            @ui.refreshable
-            def inspector_panel():
-                with ui.card().classes("w-80"):
-                    ui.label("Singer").classes("text-lg font-bold")
-                    s = self.selected
+                if s is not None:
                     ui.input(
                         "Name",
                         value=s.name,
@@ -306,10 +317,13 @@ class ChoirApp:
                     ui.label(f"Spot: {s.spot_id or 'Pending'}").classes(
                         "text-sm text-gray-400 mt-2"
                     )
+                else:
+                    ui.label("Nobody selected").classes(
+                        "text-sm text-gray-400 mt-2"
+                    )
 
-            self.inspector = inspector_panel
-            self.inspector()
-
+        self.inspector = inspector_panel
+        self.inspector()
 
 app = ChoirApp()
 app.build_ui()
