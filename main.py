@@ -157,9 +157,9 @@ class ChoirApp:
                 )
         return "".join(elements)
 
-    def handle_mouse(self, e):
+    def handle_pointer(self, e):
         mx, my = e.image_x, e.image_y
-        if e.type == "mousedown":
+        if e.type == "pointerdown":
             for idx, s in reversed(list(enumerate(self.singers))):
                 sx, sy = self.get_singer_xy(s, idx)
                 if math.hypot(mx - sx, my - sy) <= 20:
@@ -169,10 +169,10 @@ class ChoirApp:
                         self.drag_pos = (sx, sy)
                     self.refresh()
                     break
-        elif e.type == "mousemove" and self.dragging:
+        elif e.type == "pointermove" and self.dragging:
             self.drag_pos = (mx, my)
             self.stage_view.content = self.build_svg()
-        elif e.type == "mouseup" and self.dragging:
+        elif e.type == "pointerup" and self.dragging:
             closest = min(
                 self.spots,
                 key=lambda sp: math.hypot(mx - sp.x, my - sp.y),
@@ -198,7 +198,7 @@ class ChoirApp:
                 self.dragging.spot_id = None
             self.dragging = None
             self.refresh()
-        elif e.type == "mouseup" and self.dragging is None:
+        elif e.type == "pointerup" and self.dragging is None:
             clicked_singer = any(
                 math.hypot(mx - self.get_singer_xy(s, idx)[0], my - self.get_singer_xy(s, idx)[1]) <= 20
                 for idx, s in enumerate(self.singers)
@@ -244,8 +244,8 @@ class ChoirApp:
         self.stage_view = (
             ui.interactive_image(
                 source=make_blank_png(800, 400),
-                on_mouse=self.handle_mouse,
-                events=["mousedown", "mousemove", "mouseup"],
+                on_mouse=self.handle_pointer,
+                events=["pointerdown", "pointermove", "pointerup"],
                 cross=False,
             )
             .props('draggable="false" ondragstart="return false;" style="width: full; height: auto;"')
