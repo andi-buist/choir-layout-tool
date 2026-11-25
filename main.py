@@ -9,7 +9,7 @@ import json, math
 import time
 from pathlib import Path
 
-from src.objects import Place, Singer, VOICE_COLOURS, VOICE_PRETTY_NAMES
+from src.objects import Singer, Stage, VOICE_COLOURS, VOICE_PRETTY_NAMES
 from src.components.files import FileUploader
 from src.components.interactive_images import make_blank_png
 from src.components.placement import assign_singer_places
@@ -52,15 +52,12 @@ def _load_local_singers() -> List[Singer]:
 class ChoirApp:
     def __init__(self):
         self.stage_w, self.stage_h = (800, 400)
-        self.stage_rows = DEFAULT_ROWS
-        self.stage_columns = DEFAULT_COLUMNS
-        self.missing_places = list(DEFAULT_MISSING_PLACES)
         self.place_positions: Dict[str, Tuple[float, float]] = {}
 
-        self.places = self._generate_stage(
-            self.stage_rows,
-            self.stage_columns,
-            self.missing_places,
+        self.stage = self._generate_stage(
+            DEFAULT_ROWS,
+            DEFAULT_COLUMNS,
+            list(DEFAULT_MISSING_PLACES),
         )
         self.singers = _load_local_singers()
         self.selected: Singer = None
@@ -73,32 +70,17 @@ class ChoirApp:
         columns: int,
         missing_places: List[str],
         voice_assignments: Optional[List[List[Optional[str]]]] = None,
-    ) -> List[Place]:
-        places = []
-        row_voice_parts = get_default_voice_parts(columns)
-
-        for r in range(rows):
-            row_letter = chr(ord("A") + rows - (r + 1)) # Build front to back, highest letter first
-
-            for i in range(columns):
-                place_name = f"{row_letter}{str(i+1).zfill(2)}"
-                voice_part = (
-                    voice_assignments[r][i]
-                    if voice_assignments is not None
-                    else row_voice_parts[i]
-                )
-                if place_name in missing_places or voice_part is None:
-                    continue
-
-                stage_place = Place(
-                    place_name,
-                    r,
-                    i,
-                    voice_part=voice_part,
-                )
-
-                places.append(stage_place)
-        return places
+    ) -> Stage:
+        matrix = (
+            voice_assignments
+            if voice_assignments is not None
+            else [get_default_voice_parts(columns) for _ in range(rows)]
+        )
+        stage = Stage(np.array(matrix, dtype=object))
+        for place_id, row, column, _ in stage.iter_places():
+            if place_id in missing_places:
+                stage.matrix[row, column] = None
+        return stage
 
     def _randomise_singer_places(self):
         self._assign_singer_places()
@@ -106,9 +88,7 @@ class ChoirApp:
     def _assign_singer_places(self, singers_to_assign: Optional[List[Singer]] = None):
         assign_singer_places(
             self.singers,
-            self.places,
-            self.stage_rows,
-            self.stage_columns,
+            self.stage,
             singers_to_assign,
         )
 
@@ -121,17 +101,17 @@ class ChoirApp:
             return self.place_positions[s.place_id]
         return (50 + idx * 45, 40)
 
-    def _nearest_place(self, x: float, y: float) -> Tuple[Optional[Place], float]:
+    def _nearest_place(self, x: float, y: float) -> Tuple[Optional[str], float]:
         closest = None
         closest_distance = math.inf
 
-        for place in self.places:
-            position = self.place_positions.get(place.id)
+        for place_id, _, _, _ in self.stage.iter_places():
+            position = self.place_positions.get(place_id)
             if position is None:
                 continue
             distance = math.hypot(x - position[0], y - position[1])
             if distance < closest_distance:
-                closest = place
+                closest = place_id
                 closest_distance = distance
 
         return closest, closest_distance
@@ -160,30 +140,36 @@ class ChoirApp:
         )
 
         def render_places():
+            # this is to follow Kelly's specific use-case
+            PLACES_OFFSET = 1.1
+
+            # these should be parameterised/automatically figured out from screen
             STAGE_ANGLE = 20
             STAGE_RADIUS = 1800
             ROW_SQUEEZE = 20
 
-            start, end = math.radians(270 - STAGE_ANGLE/2), math.radians(270 + STAGE_ANGLE/2)
+            angle_offset = STAGE_ANGLE/self.stage.columns * PLACES_OFFSET
 
-            row_depth = (self.stage_h - (ROW_SQUEEZE * 2) - 55) / max(1, self.stage_rows - 1)
+            start, end = math.radians(270 + angle_offset - STAGE_ANGLE/2), math.radians(270 + angle_offset + STAGE_ANGLE/2)
+
+            row_depth = (self.stage_h - (ROW_SQUEEZE * 2) - 55) / max(1, self.stage.rows - 1)
             center_x = self.stage_w / 2
-            center_y = ROW_SQUEEZE + STAGE_RADIUS + ((self.stage_rows - 1) * row_depth)
+            center_y = ROW_SQUEEZE + STAGE_RADIUS + ((self.stage.rows - 1) * row_depth)
             positions = {}
 
-            for place in self.places:
-                radius = STAGE_RADIUS + place.row * row_depth
+            for place_id, row, column, voice_part in self.stage.iter_places():
+                radius = STAGE_RADIUS + row * row_depth
 
-                if self.stage_columns > 1:
-                    angle = start + (place.index / (self.stage_columns - 1)) * (end - start)
+                if self.stage.columns > 1:
+                    angle = start + (column / (self.stage.columns - 1)) * (end - start)
                 else:
                     angle = (start + end) / 2
 
                 x = round(center_x + radius * math.cos(angle), 1)
                 y = round(center_y + radius * math.sin(angle), 1)
 
-                colour = voice_colours_subdued.get(place.voice_part, "#1f2937")
-                positions[place.id] = (x, y)
+                colour = voice_colours_subdued.get(voice_part, "#1f2937")
+                positions[place_id] = (x, y)
                 elements.append(
                     f'<circle cx="{x}" cy="{y}" r="14" fill="{colour}"/>'
                 )
@@ -253,7 +239,7 @@ class ChoirApp:
             if self.selected and not self.selected.locked:
                 closest, distance = self._nearest_place(mx, my)
                 if closest and distance <= 32:
-                    self.selected.place_id = closest.id
+                    self.selected.place_id = closest
                     self.selected = None
                     self.refresh()
                     return
@@ -292,11 +278,11 @@ class ChoirApp:
         elif e.type == "pointerup" and self.dragging:
             closest, distance = self._nearest_place(mx, my)
             if closest and distance < 45:
-                occupant = next((s for s in self.singers if s.place_id == closest.id and s != self.dragging), None)
+                occupant = next((s for s in self.singers if s.place_id == closest and s != self.dragging), None)
                 if not occupant:
-                    self.dragging.place_id = closest.id
+                    self.dragging.place_id = closest
                 elif not occupant.locked:
-                    occupant.place_id, self.dragging.place_id = self.dragging.place_id, closest.id
+                    occupant.place_id, self.dragging.place_id = self.dragging.place_id, closest
             else:
                 self.dragging.place_id = None
             self.dragging = None
@@ -314,27 +300,19 @@ class ChoirApp:
             self.singers = [Singer(**singer) for singer in uploader.singers]
 
         if uploader.stage_layout is not None:
-            self._apply_stage_layout(*uploader.stage_layout)
+            self._apply_stage_layout(uploader.stage_layout)
 
         if uploader.singers is not None:
             self._randomise_singer_places()
 
     def _apply_stage_layout(
         self,
-        rows: int,
-        columns: int,
-        assignments: List[List[Optional[str]]],
+        assignments: np.ndarray,
     ) -> None:
-        self.stage_rows = rows
-        self.stage_columns = columns
-        self.missing_places = [
-            f"{chr(ord('A') + rows - row - 1)}{str(column + 1).zfill(2)}"
-            for row, row_assignments in enumerate(assignments)
-            for column, voice_part in enumerate(row_assignments)
-            if voice_part is None
-        ]
-        self.places = self._generate_stage(rows, columns, self.missing_places, assignments)
-        valid_place_ids = {place.id for place in self.places}
+        if assignments.ndim != 2:
+            raise ValueError("Stage layout must be a two-dimensional matrix")
+        self.stage = Stage(assignments.copy())
+        valid_place_ids = {place_id for place_id, _, _, _ in self.stage.iter_places()}
         displaced_singers = [
             singer
             for singer in self.singers
@@ -345,28 +323,18 @@ class ChoirApp:
         else:
             self.refresh()
 
-    def _stage_assignments(self) -> List[List[Optional[str]]]:
-        assignments = [
-            [None for _ in range(self.stage_columns)]
-            for _ in range(self.stage_rows)
-        ]
-        for place in self.places:
-            assignments[place.row][place.index] = place.voice_part
-        return assignments
+    def _stage_assignments(self) -> np.ndarray:
+        return self.stage.matrix.copy()
 
     async def stage_editor_callback(self):
-        editor = StageEditor(
-            self.stage_rows,
-            self.stage_columns,
-            self._stage_assignments(),
-        )
+        editor = StageEditor(self._stage_assignments())
         await editor.open_dialog()
         await editor.dialog
 
         if editor.result is None:
             return
 
-        self._apply_stage_layout(*editor.result)
+        self._apply_stage_layout(editor.result)
 
     def download_singers_callback(self):
         singers = [asdict(s) for s in self.singers]

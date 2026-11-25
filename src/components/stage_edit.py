@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from functools import partial
 from io import StringIO
@@ -7,12 +8,19 @@ from nicegui import ui
 
 from src.objects import VOICE_COLOURS, VOICE_PRETTY_NAMES
 
-DEFAULT_ROWS = 10
-DEFAULT_COLUMNS = 15
-DEFAULT_MISSING_PLACES = ("H01", "H15",
-                          *["J" + str(x+1).zfill(2) for x in range(DEFAULT_COLUMNS) if x not in [10,11]]) # Adding 2 front seats by default
 VOICE_PARTS: Tuple[Optional[str], ...] = ("a1", "a2", "b", "s2", "s1", None)
-VOICE_PART_WEIGHTS = {voice_part: 1 for voice_part in VOICE_PARTS if voice_part is not None}
+
+DEFAULT_ROWS = 9
+DEFAULT_COLUMNS = 17
+DEFAULT_MISSING_PLACES = ("H01", "H15",
+                          *[chr(ord("A") + x) + "16" for x in range(DEFAULT_ROWS - 1)],
+                          *[chr(ord("A") + x) + "17" for x in range(DEFAULT_ROWS - 1)]) # Adding 2 front seats by default
+VOICE_PART_WEIGHTS = {"a1": 1,
+                      "a2": 1,
+                      "b": 1,
+                      "s2": 1,
+                      "s1": 2}
+
 MAX_ROWS = 26
 
 
@@ -32,8 +40,8 @@ def get_default_voice_parts(columns: int) -> List[str]:
     return voice_parts
 
 
-def stage_layout_to_csv(assignments: List[List[Optional[str]]]) -> str:
-    return pd.DataFrame(reversed(assignments)).to_csv(
+def stage_layout_to_csv(assignments: np.ndarray) -> str:
+    return pd.DataFrame(assignments[::-1, :]).to_csv(
         index=False,
         header=False,
         na_rep="None",
@@ -41,37 +49,37 @@ def stage_layout_to_csv(assignments: List[List[Optional[str]]]) -> str:
     )
 
 
-def stage_layout_from_csv(contents: str) -> Tuple[int, int, List[List[Optional[str]]]]:
+def stage_layout_from_csv(contents: str) -> np.ndarray:
     frame = pd.read_csv(
         StringIO(contents),
         header=None,
         dtype=str,
         keep_default_na=False,
     )
-    display_assignments = [
+    display_assignments = np.array([
         [
             None if value.strip().lower() in ("", "none") else value.strip().lower()
             for value in row
         ]
         for row in frame.values.tolist()
-    ]
-    rows, columns = frame.shape
-    return rows, columns, list(reversed(display_assignments))
+    ], dtype=object)
+    return display_assignments[::-1, :].copy()
 
 
 class StageEditor:
-    def __init__(
-        self,
-        rows: int,
-        columns: int,
-        assignments: List[List[Optional[str]]],
-    ):
-        self.assignments = [row.copy() for row in assignments]
-        self.rows = rows
-        self.columns = columns
+    def __init__(self, assignments: np.ndarray):
+        self.assignments = assignments.copy()
         self.dialog = None
-        self.result: Optional[Tuple[int, int, List[List[Optional[str]]]]] = None
+        self.result: Optional[np.ndarray] = None
         self._refresh_content = None
+
+    @property
+    def rows(self) -> int:
+        return self.assignments.shape[0]
+
+    @property
+    def columns(self) -> int:
+        return self.assignments.shape[1]
 
     def _refresh(self) -> None:
         if self._refresh_content is not None:
@@ -79,40 +87,31 @@ class StageEditor:
 
     def _add_row(self) -> None:
         if self.rows < MAX_ROWS:
-            self.assignments.insert(0, get_default_voice_parts(self.columns))
-            self.rows += 1
+            new_row = np.array(get_default_voice_parts(self.columns), dtype=object)
+            self.assignments = np.vstack((new_row, self.assignments))
             self._refresh()
 
     def _remove_row(self) -> None:
         if self.rows > 1:
-            self.assignments.pop(0)
-            self.rows -= 1
+            self.assignments = self.assignments[1:, :].copy()
             self._refresh()
 
-    def _add_column(self) -> None:
-        self.columns += 1
-        rebalanced_row = get_default_voice_parts(self.columns)
-
-        for row in self.assignments:
-            missing_places = [idx for idx,x in enumerate(row) if not x]
-            row.append(None)
-            row[:] = rebalanced_row
-            for idx in missing_places: row[idx] = None
-
+    def _resize_columns(self, columns: int) -> None:
+        preserved_columns = min(self.columns, columns)
+        missing_rows, missing_columns = np.where(
+            np.equal(self.assignments[:, :preserved_columns], None)
+        )
+        rebalanced_row = np.array(get_default_voice_parts(columns), dtype=object)
+        self.assignments = np.tile(rebalanced_row, (self.rows, 1))
+        self.assignments[missing_rows, missing_columns] = None
         self._refresh()
+
+    def _add_column(self) -> None:
+        self._resize_columns(self.columns + 1)
 
     def _remove_column(self) -> None:
         if self.columns > 1:
-            self.columns -= 1
-            rebalanced_row = get_default_voice_parts(self.columns)
-
-        for row in self.assignments:
-            missing_places = [idx for idx,x in enumerate(row) if not x]
-            row.pop()
-            row[:] = rebalanced_row
-            for idx in missing_places: row[idx] = None
-
-            self._refresh()
+            self._resize_columns(self.columns - 1)
 
     def _cycle_assignment(self, row: int, column: int) -> None:
         current = self.assignments[row][column]
@@ -177,11 +176,7 @@ class StageEditor:
                     ui.button("Cancel", on_click=self.dialog.close)
 
                     def apply_changes():
-                        self.result = (
-                            self.rows,
-                            self.columns,
-                            [row.copy() for row in self.assignments],
-                        )
+                        self.result = self.assignments.copy()
                         self.dialog.close()
 
                     ui.button("Apply", on_click=apply_changes)
