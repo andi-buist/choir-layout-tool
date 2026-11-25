@@ -1,7 +1,2 @@
 nicegui
-pandas
-authlib
-httpx
-openpyxl
-jupyter
 colour

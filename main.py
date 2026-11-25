@@ -1,4 +1,6 @@
 from nicegui import ui
+import colour
+
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Tuple
 import json, math
@@ -6,7 +8,6 @@ import zlib, struct, base64
 import time
 import random
 from pathlib import Path
-import colour
 
 from src.objects import Singer, Place
 from src.components.files import FileUploader
