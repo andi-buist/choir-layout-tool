@@ -1,5 +1,5 @@
-from dataclasses import dataclass, asdict
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 @dataclass
 class Singer:
@@ -24,5 +24,8 @@ class Place:
     id: str
     row: int
     index: int
+
     x: float
     y: float
+
+    voice_part: str = None

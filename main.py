@@ -31,12 +31,14 @@ def make_blank_png(width=800, height=550, color=(0, 0, 0, 255)) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 VOICE_COLORS = {
-    "s1": "#ffc4c4",
+    "a1": "#a3d6ff",
+    "a2": "#0a91ff",
+    "b": "#23a338",
     "s2": "#ff3434",
-    "a1": "#0a91ff",
-    "a2": "#a3d6ff",
-    "b": "#23a338"
+    "s1": "#ffc4c4"
 }
+
+VOICE_PART_WEIGHTS = {"a1": 1, "a2": 1, "b": 1, "s2": 1, "s1": 1}
 
 class ChoirApp:
     MISSING_PLACES = ["H01", "H15"]
@@ -50,8 +52,26 @@ class ChoirApp:
         self.dragging: Optional[Singer] = None
         self.drag_pos = (0.0, 0.0)
 
+    def _get_row_voice_parts(self, per_row: int) -> List[str]:
+        total_weight = sum(VOICE_PART_WEIGHTS.values())
+        if total_weight <= 0 or any(weight < 0 for weight in VOICE_PART_WEIGHTS.values()):
+            raise ValueError("Voice-part weights must be non-negative with a positive total")
+
+        voice_parts = []
+        for i in range(per_row):
+            position = i * total_weight / per_row
+            cumulative_weight = 0
+            for voice_part, weight in VOICE_PART_WEIGHTS.items():
+                cumulative_weight += weight
+                if position < cumulative_weight:
+                    voice_parts.append(voice_part)
+                    break
+        return voice_parts
+
     def _generate_stage(self, rows=9, per_row=15) -> List[Place]:
         places = []
+        row_voice_parts = self._get_row_voice_parts(per_row)
+
         start, end = math.radians(260), math.radians(280)
         half_angle = math.radians(10)  # Half of the 20-degree (260 to 280) span
 
@@ -67,38 +87,85 @@ class ChoirApp:
         center_y = pad + outer_radius
 
         for r in range(rows):
-            row_letter = chr(ord("A") + rows - (r + 1))
+            row_letter = chr(ord("A") + rows - (r + 1)) # Build front to back, highest letter first
             radius = stage_radius + (r * row_depth)
 
             for i in range(per_row):
                 place_name = f"{row_letter}{str(i+1).zfill(2)}"
+                if place_name in self.MISSING_PLACES:
+                    continue
 
-                if place_name not in self.MISSING_PLACES:
-                    theta = start + (i / (per_row - 1)) * (end - start)
+                theta = start + (i / (per_row - 1)) * (end - start)
 
-                    stage_place = Place(
-                        place_name,
-                        r,
-                        i,
-                        round(center_x + radius * math.cos(theta), 1),
-                        round(center_y + radius * math.sin(theta), 1),
-                    )
+                stage_place = Place(
+                    place_name,
+                    r,
+                    i,
+                    round(center_x + radius * math.cos(theta), 1),
+                    round(center_y + radius * math.sin(theta), 1),
+                    voice_part=row_voice_parts[i],
+                )
 
-                    places.append(stage_place)
+                places.append(stage_place)
         return places
 
-    def _assign_singers_to_places(self):
-        free_places = self.places.copy()
+    def _choose_fallback_place(self, singer: Singer, available_places: List[Place]) -> Place:
+        center_index = max(place.index for place in self.places) / 2
+        own_block_indexes = {
+            place.index for place in self.places
+            if place.voice_part == singer.voice_part
+        }
 
-        for s in self.singers:
-            if not s.locked:
-                this_place = free_places.pop(random.randint(0,len(free_places)-1))
+        def priority(place: Place):
+            block_distance = min(
+                (abs(place.index - index) for index in own_block_indexes),
+                default=abs(place.index - center_index),
+            )
+            return block_distance, -abs(place.index - center_index), place.row
 
-                s.place_id = this_place.id
+        best_priority = min(priority(place) for place in available_places)
+        closest_places = [
+            place for place in available_places
+            if priority(place) == best_priority
+        ]
+        return random.choice(closest_places)
+
+    def _randomise_singer_places(self):
+        unlocked_singers = [s for s in self.singers.copy() if not s.locked]
+        locked_place_ids = {s.place_id for s in self.singers if s.locked}
+        available_places = [p for p in self.places if p.id not in locked_place_ids]
+        matched_place_ids = set()
+
+        for singer in unlocked_singers:
+            singer.place_id = None
+
+        for place in available_places:
+            if not unlocked_singers:
+                break
+            matching_singers = [
+                singer for singer in unlocked_singers
+                if singer.voice_part == place.voice_part
+            ]
+            if not matching_singers:
+                continue
+            singer = random.choice(matching_singers)
+            singer.place_id = place.id
+            unlocked_singers.remove(singer)
+            matched_place_ids.add(place.id)
+
+        unmatched_places = [
+            place for place in available_places
+            if place.id not in matched_place_ids
+        ]
+        random.shuffle(unlocked_singers)
+        for singer in unlocked_singers:
+            if not unmatched_places:
+                break
+            place = self._choose_fallback_place(singer, unmatched_places)
+            singer.place_id = place.id
+            unmatched_places.remove(place)
 
         self.refresh()
-
-    def _randomis
 
     def get_singer_xy(self, s: Singer, idx: int):
         if self.dragging and self.dragging.id == s.id:
@@ -107,6 +174,14 @@ class ChoirApp:
         return (place.x, place.y) if place else (50 + idx * 45, 40)
 
     def build_svg(self) -> str:
+        COLOUR_DEFS = {
+            "dots": {
+                "chair": "#f97316",
+                "hearing_req": "#a855f7",
+                "notes": "#9FA2BE"
+            }
+        }
+
         elements = []
         elements.append(
             f'<text x="{self.stage_w / 2}" y="{self.stage_h - 25}" fill="#9ca3af" font-size="38" font-weight="bold" text-anchor="middle">🎵</text>'
@@ -137,12 +212,17 @@ class ChoirApp:
             )
             if s.needs_chair:
                 elements.append(
-                    f'<circle cx="{x+13}" cy="{y-13}" r="5" fill="#f97316" stroke="#000"/>'
+                    f'<circle cx="{x+13}" cy="{y-13}" r="3" fill={COLOUR_DEFS["dots"]["chair"]} stroke="#000"/>'
                 )
             if s.hearing_req:
                 elements.append(
-                    f'<circle cx="{x-13}" cy="{y-13}" r="5" fill="#a855f7" stroke="#000"/>'
+                    f'<circle cx="{x-13}" cy="{y-13}" r="3" fill={COLOUR_DEFS["dots"]["hearing_req"]} stroke="#000"/>'
                 )
+            if s.notes is not None and s.notes != "":
+                elements.append(
+                    f'<circle cx="{x+13}" cy="{y+13}" r="3" fill={COLOUR_DEFS["dots"]["notes"]} stroke="#000"/>'
+                )
+
         return "".join(elements)
 
     def handle_pointer(self, e):
@@ -235,7 +315,7 @@ class ChoirApp:
         self.singers = [Singer(**s) for s in uploader.data]
         self.places = self._generate_stage()
 
-        self._assign_singers_to_places()
+        self._randomise_singer_places()
 
         self.refresh()
 
@@ -254,7 +334,7 @@ class ChoirApp:
         # 1. Header row with download/upload buttons
         with ui.row().classes("w-full items-center justify-center p-2"):
             ui.label("🎶 Choir Stage Planner").classes("text-2xl font-bold justify-center")
-            ui.button("Randomise", color="secondary", on_click=self._assign_singers_to_places)
+            ui.button("Randomise", color="secondary", on_click=self._randomise_singer_places)
             ui.button("Save", on_click=self.download_callback)
             ui.button("Load", on_click=self.upload_callback)
 
@@ -337,7 +417,7 @@ class ChoirApp:
                         "Notes",
                         value=s.notes,
                         on_change=lambda e: (
-                            setattr(s, "name", e.value),
+                            setattr(s, "notes", e.value),
                             self.refresh(),
                         ),
                     ).classes("w-full")
