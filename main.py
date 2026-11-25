@@ -30,6 +30,13 @@ def make_blank_png(width=800, height=550, color=(0, 0, 0, 255)) -> str:
     )
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
+VOICE_PRETTY_NAMES = {
+    "a1": "Alto 1",
+    "a2": "Alto 2",
+    "b": "Bari.",
+    "s2": "Sop. 2",
+    "s1": "Sop. 1"
+}
 VOICE_COLORS = {
     "a1": "#a3d6ff",
     "a2": "#0a91ff",
@@ -37,7 +44,6 @@ VOICE_COLORS = {
     "s2": "#ff3434",
     "s1": "#ffc4c4"
 }
-
 VOICE_PART_WEIGHTS = {"a1": 1, "a2": 1, "b": 1, "s2": 1, "s1": 1}
 
 class ChoirApp:
@@ -356,27 +362,17 @@ class ChoirApp:
         @ui.refreshable
         def inspector_panel():
             with ui.card().classes("w-4/5 mx-auto p-4"):
-                ui.label("Singer").classes("text-lg font-bold")
+                ui.markdown("## Singer").classes("w-full text-center")
                 s = self.selected
 
                 if s is not None:
-                    ui.input(
-                        "Name",
-                        value=s.name,
-                        on_change=lambda e: (
-                            setattr(s, "name", e.value),
-                            self.refresh(),
-                        ),
-                    ).classes("w-full")
-                    ui.select(
-                        list(VOICE_COLORS.keys()),
-                        label="Voice Part",
-                        value=s.voice_part,
-                        on_change=lambda e: (
-                            setattr(s, "voice_part", e.value),
-                            self.refresh(),
-                        )
-                    ).classes("w-full")
+                    with ui.row().classes("w-4/5 mx-auto justify-center"):
+                        ui.markdown(
+                            f"#### {VOICE_PRETTY_NAMES.get(s.voice_part)}"
+                        ).classes("text-center border border-gray-700 rounded-lg px-4")
+                        ui.markdown(
+                            f"#### {s.name}"
+                        ).classes("text-center border border-gray-700 rounded-lg px-4")
                     ui.checkbox(
                         "Lock",
                         value=s.locked,
