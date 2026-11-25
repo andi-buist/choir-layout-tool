@@ -1,53 +1,28 @@
 from nicegui import ui
 import colour
+import numpy as np
 
+import logging
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Tuple
 import json, math
-import zlib, struct, base64
 import time
 import random
 from pathlib import Path
 
-from src.objects import Singer, Place
+from src.objects import Place, Singer, VOICE_COLOURS, VOICE_PRETTY_NAMES
 from src.components.files import FileUploader
+from src.components.interactive_images import make_blank_png
+from src.components.stage_edit import (
+    DEFAULT_COLUMNS,
+    DEFAULT_MISSING_PLACES,
+    DEFAULT_ROWS,
+    StageEditor,
+    get_default_voice_parts,
+)
 
-def make_blank_png(width=800, height=550, colour=(0, 0, 0, 0)) -> str:
-    raw_row = b"\x00" + bytes(colour) * width
-    raw_data = raw_row * height
-
-    def chunk(tag, data):
-        return (
-            struct.pack("!I", len(data))
-            + tag
-            + data
-            + struct.pack("!I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        )
-
-    ihdr = struct.pack("!IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    png = (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", ihdr)
-        + chunk(b"IDAT", zlib.compress(raw_data))
-        + chunk(b"IEND", b"")
-    )
-    return "data:image/png;base64," + base64.b64encode(png).decode()
-
-VOICE_PRETTY_NAMES = {
-    "a1": "Alto 1",
-    "a2": "Alto 2",
-    "b": "Bari.",
-    "s2": "Sop. 2",
-    "s1": "Sop. 1"
-}
-VOICE_COLOURS = {
-    "a1": "#432e92",
-    "a2": "#234591",
-    "b": "#18812a",
-    "s2": "#801b1b",
-    "s1": "#bd491b"
-}
-VOICE_PART_WEIGHTS = {"a1": 1, "a2": 1, "b": 1, "s2": 1, "s1": 1}
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # build alternate colours from main colour register
 voice_colours_subdued = {}
@@ -61,14 +36,24 @@ for k,v in VOICE_COLOURS.items():
     voice_colours_subdued[k] = colour.hsl2hex(subdued)
     voice_colours_deep[k] = colour.hsl2hex(deep)
 
-class ChoirApp:
-    MISSING_PLACES = ["H01", "H15"]
+def _load_local_singers() -> List[Singer]:
+    singers_path = Path(__file__).resolve().parent / "data" / "singers.json"
+    try:
+        with open(singers_path, "r") as singers_file:
+            singer_list = [Singer(**singer) for singer in json.load(singers_file)]
 
+            logger.info(f"Local file loaded successfully, {len(singer_list)} singers loaded")
+            return singer_list
+    except:
+        logger.warning("No local file, presuming in deployment")
+        return []
+
+class ChoirApp:
     def __init__(self):
         self.stage_w, self.stage_h = (800, 400)
-        self.stage_rows = 9
-        self.stage_columns = 15
-        self.missing_places = self.MISSING_PLACES.copy()
+        self.stage_rows = DEFAULT_ROWS
+        self.stage_columns = DEFAULT_COLUMNS
+        self.missing_places = list(DEFAULT_MISSING_PLACES)
         self.place_positions: Dict[str, Tuple[float, float]] = {}
 
         self.places = self._generate_stage(
@@ -76,57 +61,39 @@ class ChoirApp:
             self.stage_columns,
             self.missing_places,
         )
-        self.singers = []
+        self.singers = _load_local_singers()
         self.selected: Singer = None
         self.dragging: Optional[Singer] = None
         self.drag_pos = (0.0, 0.0)
-
-        self._load_local_singers()
-
-    def _load_local_singers(self):
-        singers_path = Path(__file__).resolve().parent / "data" / "singers.json"
-        if singers_path.is_file():
-            with singers_path.open(encoding="utf-8") as singers_file:
-                self.singers = [Singer(**singer) for singer in json.load(singers_file)]
-
-    def _get_row_voice_parts(self, per_row: int) -> List[str]:
-        total_weight = sum(VOICE_PART_WEIGHTS.values())
-        if total_weight <= 0 or any(weight < 0 for weight in VOICE_PART_WEIGHTS.values()):
-            raise ValueError("Voice-part weights must be non-negative with a positive total")
-
-        voice_parts = []
-        for i in range(per_row):
-            position = i * total_weight / per_row
-            cumulative_weight = 0
-            for voice_part, weight in VOICE_PART_WEIGHTS.items():
-                cumulative_weight += weight
-                if position < cumulative_weight:
-                    voice_parts.append(voice_part)
-                    break
-        return voice_parts
 
     def _generate_stage(
         self,
         rows: int,
         columns: int,
         missing_places: List[str],
+        voice_assignments: Optional[List[List[Optional[str]]]] = None,
     ) -> List[Place]:
         places = []
-        row_voice_parts = self._get_row_voice_parts(columns)
+        row_voice_parts = get_default_voice_parts(columns)
 
         for r in range(rows):
             row_letter = chr(ord("A") + rows - (r + 1)) # Build front to back, highest letter first
 
             for i in range(columns):
                 place_name = f"{row_letter}{str(i+1).zfill(2)}"
-                if place_name in missing_places:
+                voice_part = (
+                    voice_assignments[r][i]
+                    if voice_assignments is not None
+                    else row_voice_parts[i]
+                )
+                if place_name in missing_places or voice_part is None:
                     continue
 
                 stage_place = Place(
                     place_name,
                     r,
                     i,
-                    voice_part=row_voice_parts[i],
+                    voice_part=voice_part,
                 )
 
                 places.append(stage_place)
@@ -154,34 +121,41 @@ class ChoirApp:
         return random.choice(closest_places)
 
     def _randomise_singer_places(self):
-        unlocked_singers = [s for s in self.singers.copy() if not s.locked]
-        locked_place_ids = {s.place_id for s in self.singers if s.locked}
-        available_places = [p for p in self.places if p.id not in locked_place_ids]
+        self._assign_singer_places([s for s in self.singers if not s.locked])
+
+    def _assign_singer_places(self, singers_to_assign: List[Singer]):
+        assigning_ids = {id(singer) for singer in singers_to_assign}
+        occupied_place_ids = {
+            singer.place_id
+            for singer in self.singers
+            if id(singer) not in assigning_ids and singer.place_id is not None
+        }
+        available_places = [p for p in self.places if p.id not in occupied_place_ids]
         matched_place_ids = set()
 
-        for singer in unlocked_singers:
+        for singer in singers_to_assign:
             singer.place_id = None
 
         for place in available_places:
-            if not unlocked_singers:
+            if not singers_to_assign:
                 break
             matching_singers = [
-                singer for singer in unlocked_singers
+                singer for singer in singers_to_assign
                 if singer.voice_part == place.voice_part
             ]
             if not matching_singers:
                 continue
             singer = random.choice(matching_singers)
             singer.place_id = place.id
-            unlocked_singers.remove(singer)
+            singers_to_assign.remove(singer)
             matched_place_ids.add(place.id)
 
         unmatched_places = [
             place for place in available_places
             if place.id not in matched_place_ids
         ]
-        random.shuffle(unlocked_singers)
-        for singer in unlocked_singers:
+        random.shuffle(singers_to_assign)
+        for singer in singers_to_assign:
             if not unmatched_places:
                 break
             place = self._choose_fallback_place(singer, unmatched_places)
@@ -238,7 +212,7 @@ class ChoirApp:
         def render_places():
             STAGE_ANGLE = 20
             STAGE_RADIUS = 1800
-            ROW_SQUEEZE = 25
+            ROW_SQUEEZE = 20
 
             start, end = math.radians(270 - STAGE_ANGLE/2), math.radians(270 + STAGE_ANGLE/2)
 
@@ -261,7 +235,7 @@ class ChoirApp:
                 colour = voice_colours_subdued.get(place.voice_part, "#1f2937")
                 positions[place.id] = (x, y)
                 elements.append(
-                    f'<circle cx="{x}" cy="{y}" r="16" fill="{colour}"/>'
+                    f'<circle cx="{x}" cy="{y}" r="14" fill="{colour}"/>'
                 )
 
             self.place_positions = positions
@@ -279,7 +253,7 @@ class ChoirApp:
                 stroke_width = 3 if (singer == self.selected or singer.locked) else 1.5
 
                 elements.append(
-                    f'<circle cx="{x}" cy="{y}" r="18" fill="{colour}" stroke="{stroke}" stroke-width="{stroke_width}"/>'
+                    f'<circle cx="{x}" cy="{y}" r="16" fill="{colour}" stroke="{stroke}" stroke-width="{stroke_width}"/>'
                 )
                 elements.append(
                     f'<text x="{x}" y="{y+4}" fill="#111" font-size="11" font-weight="bold" text-anchor="middle">{singer.name[:1]}</text>'
@@ -394,6 +368,51 @@ class ChoirApp:
 
         self.refresh()
 
+    def _stage_assignments(self) -> List[List[Optional[str]]]:
+        assignments = [
+            [None for _ in range(self.stage_columns)]
+            for _ in range(self.stage_rows)
+        ]
+        for place in self.places:
+            assignments[place.row][place.index] = place.voice_part
+        return assignments
+
+    async def stage_editor_callback(self):
+        editor = StageEditor(
+            self.stage_rows,
+            self.stage_columns,
+            self._stage_assignments(),
+        )
+        await editor.open_dialog()
+        await editor.dialog
+
+        if editor.result is None:
+            return
+
+        self.stage_rows, self.stage_columns, assignments = editor.result
+        self.missing_places = [
+            f"{chr(ord('A') + self.stage_rows - row - 1)}{str(column + 1).zfill(2)}"
+            for row, row_assignments in enumerate(assignments)
+            for column, voice_part in enumerate(row_assignments)
+            if voice_part is None
+        ]
+        self.places = self._generate_stage(
+            self.stage_rows,
+            self.stage_columns,
+            self.missing_places,
+            assignments,
+        )
+        valid_place_ids = {place.id for place in self.places}
+        displaced_singers = [
+            singer
+            for singer in self.singers
+            if singer.place_id is not None and singer.place_id not in valid_place_ids
+        ]
+        if displaced_singers:
+            self._assign_singer_places(displaced_singers)
+        else:
+            self.refresh()
+
     def download_callback(self):
         singers = [asdict(s) for s in self.singers]
 
@@ -407,9 +426,11 @@ class ChoirApp:
         ui.dark_mode().enable()
 
         # 1. Header row with download/upload buttons
+        with ui.row().classes("w-full items-center justify-center"):
+            ui.label("🎶 Choir Stage Planner").classes("text-2xl font-bold")
         with ui.row().classes("w-full items-center justify-center p-2"):
-            ui.label("🎶 Choir Stage Planner").classes("text-2xl font-bold justify-center")
             ui.button("Randomise", color="secondary", on_click=self._randomise_singer_places)
+            ui.button("Edit stage", color="#674079", on_click=self.stage_editor_callback)
             ui.button("Save", on_click=self.download_callback)
             ui.button("Load", on_click=self.upload_callback)
 
