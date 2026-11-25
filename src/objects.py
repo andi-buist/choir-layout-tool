@@ -25,7 +25,4 @@ class Place:
     row: int
     index: int
 
-    x: float
-    y: float
-
     voice_part: str = None
