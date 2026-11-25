@@ -1,4 +1,6 @@
+import pandas as pd
 from functools import partial
+from io import StringIO
 from typing import List, Optional, Tuple
 
 from nicegui import ui
@@ -28,6 +30,33 @@ def get_default_voice_parts(columns: int) -> List[str]:
                 break
 
     return voice_parts
+
+
+def stage_layout_to_csv(assignments: List[List[Optional[str]]]) -> str:
+    return pd.DataFrame(reversed(assignments)).to_csv(
+        index=False,
+        header=False,
+        na_rep="None",
+        lineterminator="\n",
+    )
+
+
+def stage_layout_from_csv(contents: str) -> Tuple[int, int, List[List[Optional[str]]]]:
+    frame = pd.read_csv(
+        StringIO(contents),
+        header=None,
+        dtype=str,
+        keep_default_na=False,
+    )
+    display_assignments = [
+        [
+            None if value.strip().lower() in ("", "none") else value.strip().lower()
+            for value in row
+        ]
+        for row in frame.values.tolist()
+    ]
+    rows, columns = frame.shape
+    return rows, columns, list(reversed(display_assignments))
 
 
 class StageEditor:
@@ -65,8 +94,10 @@ class StageEditor:
         rebalanced_row = get_default_voice_parts(self.columns)
 
         for row in self.assignments:
+            missing_places = [idx for idx,x in enumerate(row) if not x]
             row.append(None)
             row[:] = rebalanced_row
+            for idx in missing_places: row[idx] = None
 
         self._refresh()
 
@@ -76,8 +107,10 @@ class StageEditor:
             rebalanced_row = get_default_voice_parts(self.columns)
 
         for row in self.assignments:
+            missing_places = [idx for idx,x in enumerate(row) if not x]
             row.pop()
             row[:] = rebalanced_row
+            for idx in missing_places: row[idx] = None
 
             self._refresh()
 

@@ -7,18 +7,19 @@ from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Tuple
 import json, math
 import time
-import random
 from pathlib import Path
 
 from src.objects import Place, Singer, VOICE_COLOURS, VOICE_PRETTY_NAMES
 from src.components.files import FileUploader
 from src.components.interactive_images import make_blank_png
+from src.components.placement import assign_singer_places
 from src.components.stage_edit import (
     DEFAULT_COLUMNS,
     DEFAULT_MISSING_PLACES,
     DEFAULT_ROWS,
     StageEditor,
     get_default_voice_parts,
+    stage_layout_to_csv,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -99,68 +100,17 @@ class ChoirApp:
                 places.append(stage_place)
         return places
 
-    def _choose_fallback_place(self, singer: Singer, available_places: List[Place]) -> Place:
-        center_index = max(place.index for place in self.places) / 2
-        own_block_indexes = {
-            place.index for place in self.places
-            if place.voice_part == singer.voice_part
-        }
-
-        def priority(place: Place):
-            block_distance = min(
-                (abs(place.index - index) for index in own_block_indexes),
-                default=abs(place.index - center_index),
-            )
-            return block_distance, -abs(place.index - center_index), place.row
-
-        best_priority = min(priority(place) for place in available_places)
-        closest_places = [
-            place for place in available_places
-            if priority(place) == best_priority
-        ]
-        return random.choice(closest_places)
-
     def _randomise_singer_places(self):
-        self._assign_singer_places([s for s in self.singers if not s.locked])
+        self._assign_singer_places()
 
-    def _assign_singer_places(self, singers_to_assign: List[Singer]):
-        assigning_ids = {id(singer) for singer in singers_to_assign}
-        occupied_place_ids = {
-            singer.place_id
-            for singer in self.singers
-            if id(singer) not in assigning_ids and singer.place_id is not None
-        }
-        available_places = [p for p in self.places if p.id not in occupied_place_ids]
-        matched_place_ids = set()
-
-        for singer in singers_to_assign:
-            singer.place_id = None
-
-        for place in available_places:
-            if not singers_to_assign:
-                break
-            matching_singers = [
-                singer for singer in singers_to_assign
-                if singer.voice_part == place.voice_part
-            ]
-            if not matching_singers:
-                continue
-            singer = random.choice(matching_singers)
-            singer.place_id = place.id
-            singers_to_assign.remove(singer)
-            matched_place_ids.add(place.id)
-
-        unmatched_places = [
-            place for place in available_places
-            if place.id not in matched_place_ids
-        ]
-        random.shuffle(singers_to_assign)
-        for singer in singers_to_assign:
-            if not unmatched_places:
-                break
-            place = self._choose_fallback_place(singer, unmatched_places)
-            singer.place_id = place.id
-            unmatched_places.remove(place)
+    def _assign_singer_places(self, singers_to_assign: Optional[List[Singer]] = None):
+        assign_singer_places(
+            self.singers,
+            self.places,
+            self.stage_rows,
+            self.stage_columns,
+            singers_to_assign,
+        )
 
         self.refresh()
 
@@ -357,16 +307,43 @@ class ChoirApp:
         await uploader.open_dialog()
         await uploader.dialog
 
-        self.singers = [Singer(**s) for s in uploader.data]
-        self.places = self._generate_stage(
-            self.stage_rows,
-            self.stage_columns,
-            self.missing_places,
-        )
+        if not uploader.confirmed:
+            return
 
-        self._randomise_singer_places()
+        if uploader.singers is not None:
+            self.singers = [Singer(**singer) for singer in uploader.singers]
 
-        self.refresh()
+        if uploader.stage_layout is not None:
+            self._apply_stage_layout(*uploader.stage_layout)
+
+        if uploader.singers is not None:
+            self._randomise_singer_places()
+
+    def _apply_stage_layout(
+        self,
+        rows: int,
+        columns: int,
+        assignments: List[List[Optional[str]]],
+    ) -> None:
+        self.stage_rows = rows
+        self.stage_columns = columns
+        self.missing_places = [
+            f"{chr(ord('A') + rows - row - 1)}{str(column + 1).zfill(2)}"
+            for row, row_assignments in enumerate(assignments)
+            for column, voice_part in enumerate(row_assignments)
+            if voice_part is None
+        ]
+        self.places = self._generate_stage(rows, columns, self.missing_places, assignments)
+        valid_place_ids = {place.id for place in self.places}
+        displaced_singers = [
+            singer
+            for singer in self.singers
+            if singer.place_id is not None and singer.place_id not in valid_place_ids
+        ]
+        if displaced_singers:
+            self._assign_singer_places(displaced_singers)
+        else:
+            self.refresh()
 
     def _stage_assignments(self) -> List[List[Optional[str]]]:
         assignments = [
@@ -389,34 +366,28 @@ class ChoirApp:
         if editor.result is None:
             return
 
-        self.stage_rows, self.stage_columns, assignments = editor.result
-        self.missing_places = [
-            f"{chr(ord('A') + self.stage_rows - row - 1)}{str(column + 1).zfill(2)}"
-            for row, row_assignments in enumerate(assignments)
-            for column, voice_part in enumerate(row_assignments)
-            if voice_part is None
-        ]
-        self.places = self._generate_stage(
-            self.stage_rows,
-            self.stage_columns,
-            self.missing_places,
-            assignments,
-        )
-        valid_place_ids = {place.id for place in self.places}
-        displaced_singers = [
-            singer
-            for singer in self.singers
-            if singer.place_id is not None and singer.place_id not in valid_place_ids
-        ]
-        if displaced_singers:
-            self._assign_singer_places(displaced_singers)
-        else:
-            self.refresh()
+        self._apply_stage_layout(*editor.result)
 
-    def download_callback(self):
+    def download_singers_callback(self):
         singers = [asdict(s) for s in self.singers]
 
         ui.download(json.dumps(singers, indent=2).encode(), "singers.json")
+
+    def download_stage_callback(self):
+        stage_csv = stage_layout_to_csv(self._stage_assignments())
+        ui.download(stage_csv.encode("utf-8"), "stage.csv")
+
+    def select_save_action(self, action: str) -> None:
+        self.save_action = action
+        self.save_button.set_text(
+            "Save singers" if action == "singers" else "Save stage layout"
+        )
+
+    def save_selected_callback(self) -> None:
+        if self.save_action == "singers":
+            self.download_singers_callback()
+        else:
+            self.download_stage_callback()
 
     def refresh(self):
         self.stage_view.content = self.build_svg()
@@ -431,7 +402,22 @@ class ChoirApp:
         with ui.row().classes("w-full items-center justify-center p-2"):
             ui.button("Randomise", color="secondary", on_click=self._randomise_singer_places)
             ui.button("Edit stage", color="#674079", on_click=self.stage_editor_callback)
-            ui.button("Save", on_click=self.download_callback)
+            self.save_action = "singers"
+            self.save_button = ui.dropdown_button(
+                "Save singers",
+                split=True,
+                auto_close=True,
+                on_click=self.save_selected_callback,
+            )
+            with self.save_button:
+                ui.item(
+                    "Save singers",
+                    on_click=lambda: self.select_save_action("singers"),
+                )
+                ui.item(
+                    "Save stage layout",
+                    on_click=lambda: self.select_save_action("stage"),
+                )
             ui.button("Load", on_click=self.upload_callback)
 
         # 2. Stage editor
