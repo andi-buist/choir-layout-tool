@@ -231,7 +231,7 @@ class ChoirApp:
             )
 
         elements.append(
-            f'<text x="{self.stage_w / 2}" y="{self.stage_h - 25}" fill="#9ca3af" font-size="38" font-weight="bold" text-anchor="middle">🎵</text>'
+            f'<text x="{self.stage_w / 2}" y="{self.stage_h - 25}" fill="#9ca3af" font-size="26" font-weight="bold" text-anchor="middle">🎵</text>'
         )
 
         def render_places():
