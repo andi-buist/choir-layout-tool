@@ -478,14 +478,22 @@ class ChoirApp:
                         value=s.boundary_req,
                         on_change=lambda e: setattr(s, "boundary_req", e.value),
                     ).classes("w-full")
-                    ui.textarea(
+                    notes_input = ui.textarea(
                         "Notes",
                         value=s.notes,
-                        on_change=lambda e: (
-                            setattr(s, "notes", e.value),
-                            self.refresh(),
-                        ),
                     ).classes("w-full")
+
+                    def commit_notes_on_blur(e):
+                        notes = e.args["value"]
+                        if notes != s.notes:
+                            s.notes = notes
+                            self.refresh()
+
+                    notes_input.on(
+                        "blur",
+                        commit_notes_on_blur,
+                        js_handler="(event) => emit({value: event.target.value})",
+                    )
                     ui.label(f"Place: {s.place_id or 'Pending'}").classes(
                         "text-sm text-gray-500 mt-2"
                     )
