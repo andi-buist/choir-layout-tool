@@ -11,13 +11,15 @@ from src.objects import VOICE_PRETTY_NAMES, VOICE_COLOURS, NONE_COLOUR
 VOICE_PARTS: Tuple[Optional[str], ...] = ("a1", "a2", "b", "s2", "s1", None)
 
 DEFAULT_ROWS = 9
-DEFAULT_COLUMNS = 15
-DEFAULT_MISSING_PLACES = ("H01", "H15") # Adding 2 front seats by default
+DEFAULT_COLUMNS = 17
+DEFAULT_MISSING_PLACES = ("H01", "H15",
+                          *[chr(ord("A") + x) + "16" for x in range(DEFAULT_ROWS - 1)],
+                          *[chr(ord("A") + x) + "17" for x in range(DEFAULT_ROWS - 1)]) # Adding 2 front seats by default
 VOICE_PART_WEIGHTS = {"a1": 1,
                       "a2": 1,
                       "b": 1,
                       "s2": 1,
-                      "s1": 1}
+                      "s1": 2}
 
 MAX_ROWS = 26
 
