@@ -9,9 +9,9 @@ import json, math
 import time
 from pathlib import Path
 
-from src.objects import Singer, Stage, VOICE_COLOURS, VOICE_PRETTY_NAMES
+from src.objects import Singer, Stage, MARKER_ICONS, VOICE_PRETTY_NAMES, VOICE_COLOURS, voice_colours_deep, voice_colours_subdued, NONE_COLOUR, none_colour_deep, none_colour_subdued
 from src.components.files import FileUploader
-from src.components.interactive_images import make_blank_png
+from src.components.stage_view import make_blank_png
 from src.components.placement import assign_singer_places
 from src.components.stage_edit import (
     DEFAULT_COLUMNS,
@@ -24,18 +24,6 @@ from src.components.stage_edit import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# build alternate colours from main colour register
-voice_colours_subdued = {}
-voice_colours_deep = {}
-for k,v in VOICE_COLOURS.items():
-    hsl_decomp = colour.hex2hsl(v)
-
-    subdued = (min(a*b, 1) for a,b in zip(hsl_decomp, (1,0.3,0.6)))
-    deep = (min(a*b, 1) for a,b in zip(hsl_decomp, (1,2,0.4)))
-
-    voice_colours_subdued[k] = colour.hsl2hex(subdued)
-    voice_colours_deep[k] = colour.hsl2hex(deep)
 
 def _load_local_singers() -> List[Singer]:
     singers_path = Path(__file__).resolve().parent / "data" / "singers.json"
@@ -96,10 +84,10 @@ class ChoirApp:
 
     def get_singer_xy(self, s: Singer, idx: int):
         if self.dragging and self.dragging.id == s.id:
-            return self.drag_pos
+            return self.drag_pos # mouse cursor location
         if s.place_id is not None and s.place_id in self.place_positions:
-            return self.place_positions[s.place_id]
-        return (50 + idx * 45, 40)
+            return self.place_positions[s.place_id] # assigned place
+        return (50 + idx * 45, 40) # default place if not assigned
 
     def _nearest_place(self, x: float, y: float) -> Tuple[Optional[str], float]:
         closest = None
@@ -117,66 +105,93 @@ class ChoirApp:
         return closest, closest_distance
 
     def build_svg(self) -> str:
-        MARKER_ICONS = {
-            "chair": ("#d8d9e2", "event_seat"),
-            "hearing_req": ("#d8d9e2", "hearing"),
-            "notes": ("#d8d9e2", "notes"),
-        }
-
-        elements = []
-
-        def add_marker_icon(name: str, center_x: float, center_y: float):
-            colour, icon_name = MARKER_ICONS[name]
-            elements.append(
-                f'<text x="{center_x}" y="{center_y}" class="material-icons" '
-                f'font-family="Material Icons" font-size="6" fill="{colour}" '
-                'text-anchor="middle" dominant-baseline="central" '
-                'style="font-feature-settings:\'liga\';-webkit-font-feature-settings:\'liga\';">'
-                f'{icon_name}</text>'
-            )
-
-        elements.append(
-            f'<text x="{self.stage_w / 2}" y="{self.stage_h - 25}" fill="#9ca3af" font-size="26" font-weight="bold" text-anchor="middle">🎵</text>'
-        )
-
         def render_places():
-            # this is to follow Kelly's specific use-case
-            PLACES_OFFSET = 1.1
+            STAGE_ANGLE = 30
+            STAGE_RADIUS = 2000
+            STAGE_PADDING = (20, 20, 20, 60)
 
-            # these should be parameterised/automatically figured out from screen
-            STAGE_ANGLE = 20
-            STAGE_RADIUS = 1800
-            ROW_SQUEEZE = 20
+            padding_west, padding_north, padding_east, padding_south = STAGE_PADDING
+            available_width = max(
+                self.stage_w - padding_west - padding_east, 1
+            )
+            available_height = max(
+                self.stage_h - padding_north - padding_south, 1
+            )
+            row_depth = self.stage_h / max(self.stage.rows - 1, 1)
+            half_angle = math.radians(STAGE_ANGLE / 2)
+            place_geometry = []
 
-            angle_offset = STAGE_ANGLE/self.stage.columns * PLACES_OFFSET
+            _elements = []
 
-            start, end = math.radians(270 + angle_offset - STAGE_ANGLE/2), math.radians(270 + angle_offset + STAGE_ANGLE/2)
+            ## centre lines
+            #_elements.append(f'<line x1="{self.stage_w / 2}" y1="0" x2="{self.stage_w / 2}" y2="{self.stage_h}" stroke="white"/>')
+            #_elements.append(f'<line x1="0" y1="{self.stage_h / 2}" x2="{self.stage_w}" y2="{self.stage_h / 2}" stroke="white"/>')
 
-            row_depth = (self.stage_h - (ROW_SQUEEZE * 2) - 55) / max(1, self.stage.rows - 1)
-            center_x = self.stage_w / 2
-            center_y = ROW_SQUEEZE + STAGE_RADIUS + ((self.stage.rows - 1) * row_depth)
+            for row, assignments in enumerate(self.stage.matrix): # not iter_places, here, as we want all places for scaling logic
+                for column, voice_part in enumerate(assignments):
+                    place_id = self.stage.place_id(row, column)
+                    radius = STAGE_RADIUS + row * row_depth
+
+                    if self.stage.columns > 1:
+                        angle = (
+                            -half_angle
+                            + (column / (self.stage.columns - 1)) * 2 * half_angle
+                        )
+                    else:
+                        angle = 0
+
+                    place_geometry.append(
+                        (
+                            place_id,
+                            radius * math.sin(angle),
+                            -radius * math.cos(angle),
+                            voice_part,
+                        )
+                    )
+
             positions = {}
+            if place_geometry:
+                min_x = min(x for _, x, _, _ in place_geometry)
+                max_x = max(x for _, x, _, _ in place_geometry)
+                min_y = min(y for _, _, y, _ in place_geometry)
+                max_y = max(y for _, _, y, _ in place_geometry)
 
-            for place_id, row, column, voice_part in self.stage.iter_places():
-                radius = STAGE_RADIUS + row * row_depth
+                horizontal_span = max(max_x - min_x, 1)
+                vertical_span = max(max_y - min_y, 1)
+                scale_x = available_width / horizontal_span
+                scale_y = available_height / vertical_span
 
-                if self.stage.columns > 1:
-                    angle = start + (column / (self.stage.columns - 1)) * (end - start)
-                else:
-                    angle = (start + end) / 2
+                for place_id, raw_x, raw_y, voice_part in place_geometry:
+                    if voice_part is None:
+                        continue
 
-                x = round(center_x + radius * math.cos(angle), 1)
-                y = round(center_y + radius * math.sin(angle), 1)
-
-                colour = voice_colours_subdued.get(voice_part, "#1f2937")
-                positions[place_id] = (x, y)
-                elements.append(
-                    f'<circle cx="{x}" cy="{y}" r="14" fill="{colour}"/>'
-                )
+                    x = round(padding_west + (raw_x - min_x) * scale_x, 1)
+                    y = round(padding_north + (raw_y - min_y) * scale_y, 1)
+                    positions[place_id] = (x, y)
+                    colour = voice_colours_subdued.get(
+                        voice_part, none_colour_subdued
+                    )
+                    _elements.append(
+                        f'<circle cx="{x}" cy="{y}" r="14" fill="{colour}"/>'
+                    )
 
             self.place_positions = positions
 
+            return _elements
+
         def render_singers():
+            def marker_icon(name: str, center_x: float, center_y: float):
+                colour, icon_name = MARKER_ICONS[name]
+                return (
+                    f'<text x="{center_x}" y="{center_y}" class="material-icons" '
+                    f'font-family="Material Icons" font-size="6" fill="{colour}" '
+                    'text-anchor="middle" dominant-baseline="central" '
+                    'style="font-feature-settings:\'liga\';-webkit-font-feature-settings:\'liga\';">'
+                    f'{icon_name}</text>'
+                )
+
+            _elements = []
+
             for idx, singer in enumerate(self.singers):
                 x, y = self.get_singer_xy(singer, idx)
                 colour = VOICE_COLOURS.get(singer.voice_part, "#9ca3af")
@@ -188,21 +203,27 @@ class ChoirApp:
                 )
                 stroke_width = 3 if (singer == self.selected or singer.locked) else 1.5
 
-                elements.append(
+                _elements.append(
                     f'<circle cx="{x}" cy="{y}" r="16" fill="{colour}" stroke="{stroke}" stroke-width="{stroke_width}"/>'
                 )
-                elements.append(
+                _elements.append(
                     f'<text x="{x}" y="{y+4}" fill="#111" font-size="11" font-weight="bold" text-anchor="middle">{singer.name[:1]}</text>'
                 )
                 if singer.needs_chair:
-                    add_marker_icon("chair", x + 13, y - 13)
+                    _elements.append(marker_icon("chair", x + 13, y - 13))
                 if singer.hearing_req:
-                    add_marker_icon("hearing_req", x + 15, y)
+                    _elements.append(marker_icon("hearing_req", x + 15, y))
                 if singer.notes is not None and singer.notes != "":
-                    add_marker_icon("notes", x + 13, y + 13)
+                    _elements.append(marker_icon("notes", x + 13, y + 13))
+            return _elements
 
-        render_places()
-        render_singers()
+        elements = []
+        elements.append(
+            f'<text x="{self.stage_w / 2}" y="{self.stage_h - 13}" fill="#9ca3af" font-size="26" font-weight="bold" text-anchor="middle">🎵</text>'
+        )
+
+        elements += render_places()
+        elements += render_singers()
 
         return "".join(elements)
 

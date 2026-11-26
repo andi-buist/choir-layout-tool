@@ -6,20 +6,18 @@ from typing import List, Optional, Tuple
 
 from nicegui import ui
 
-from src.objects import VOICE_COLOURS, VOICE_PRETTY_NAMES
+from src.objects import VOICE_PRETTY_NAMES, VOICE_COLOURS, NONE_COLOUR
 
 VOICE_PARTS: Tuple[Optional[str], ...] = ("a1", "a2", "b", "s2", "s1", None)
 
 DEFAULT_ROWS = 9
-DEFAULT_COLUMNS = 17
-DEFAULT_MISSING_PLACES = ("H01", "H15",
-                          *[chr(ord("A") + x) + "16" for x in range(DEFAULT_ROWS - 1)],
-                          *[chr(ord("A") + x) + "17" for x in range(DEFAULT_ROWS - 1)]) # Adding 2 front seats by default
+DEFAULT_COLUMNS = 15
+DEFAULT_MISSING_PLACES = ("H01", "H15") # Adding 2 front seats by default
 VOICE_PART_WEIGHTS = {"a1": 1,
                       "a2": 1,
                       "b": 1,
                       "s2": 1,
-                      "s1": 2}
+                      "s1": 1}
 
 MAX_ROWS = 26
 
@@ -72,6 +70,7 @@ class StageEditor:
         self.dialog = None
         self.result: Optional[np.ndarray] = None
         self._refresh_content = None
+        self.auto_reweight = True
 
     @property
     def rows(self) -> int:
@@ -87,23 +86,38 @@ class StageEditor:
 
     def _add_row(self) -> None:
         if self.rows < MAX_ROWS:
-            new_row = np.array(get_default_voice_parts(self.columns), dtype=object)
-            self.assignments = np.vstack((new_row, self.assignments))
+            if self.auto_reweight:
+                new_row = np.array(get_default_voice_parts(self.columns), dtype=object)
+            else:
+                new_row = self.assignments[-1, :].copy()
+            self.assignments = np.vstack((self.assignments, new_row))
             self._refresh()
 
     def _remove_row(self) -> None:
         if self.rows > 1:
-            self.assignments = self.assignments[1:, :].copy()
+            self.assignments = np.delete(self.assignments, -1, axis=0)
             self._refresh()
 
     def _resize_columns(self, columns: int) -> None:
-        preserved_columns = min(self.columns, columns)
-        missing_rows, missing_columns = np.where(
-            np.equal(self.assignments[:, :preserved_columns], None)
-        )
-        rebalanced_row = np.array(get_default_voice_parts(columns), dtype=object)
-        self.assignments = np.tile(rebalanced_row, (self.rows, 1))
-        self.assignments[missing_rows, missing_columns] = None
+        if self.auto_reweight:
+            preserved_columns = min(self.columns, columns)
+            missing_rows, missing_columns = np.where(
+                np.equal(self.assignments[:, :preserved_columns], None)
+            )
+            rebalanced_row = np.array(get_default_voice_parts(columns), dtype=object)
+            self.assignments = np.tile(rebalanced_row, (self.rows, 1))
+            self.assignments[missing_rows, missing_columns] = None
+        elif columns == (self.columns + 1):
+            new_column = self.assignments[:, -1:].copy()
+            self.assignments = np.hstack((self.assignments, new_column))
+        else:
+            self.assignments = np.delete(self.assignments, -1, axis=1)
+
+        self._refresh()
+
+    def _reset_weighting(self) -> None:
+        default_row = np.array(get_default_voice_parts(self.columns), dtype=object)
+        self.assignments = np.tile(default_row, (self.rows, 1))
         self._refresh()
 
     def _add_column(self) -> None:
@@ -120,10 +134,21 @@ class StageEditor:
         ]
         self._refresh()
 
+    def _none_rc(
+        self,
+        row: Optional[int] = None,
+        column: Optional[int] = None,
+    ) -> None:
+        if (row is None) == (column is None):
+            raise ValueError("Specify exactly one row or column")
+        if row is not None:
+            self.assignments[row, :] = None
+        else:
+            self.assignments[:, column] = None
+        self._refresh()
+
     async def open_dialog(self) -> None:
         with ui.dialog() as self.dialog, ui.card().classes("w-4/5 h-[90vh] max-w-none"):
-            ui.label("Edit stage")
-
             @ui.refreshable
             def editor_content():
                 with ui.row().classes("items-center"):
@@ -139,6 +164,11 @@ class StageEditor:
                         "Remove column",
                         on_click=self._remove_column,
                     ).props("disable" if self.columns <= 1 else "")
+                    ui.checkbox(
+                        "Reweight voice parts automatically?",
+                        value=self.auto_reweight,
+                        on_change=lambda e: setattr(self, "auto_reweight", e.value)
+                        )
 
                 with ui.element("div").style(
                     "width: 100%; "
@@ -146,21 +176,42 @@ class StageEditor:
                     "overflow: hidden; "
                     "display: grid; "
                     f"grid-template-columns: 2rem repeat({self.columns}, minmax(0, 1fr)); "
-                    f"grid-template-rows: 1.5rem repeat({self.rows}, minmax(0, 1fr)); "
+                    f"grid-template-rows: 2.25rem repeat({self.rows}, minmax(0, 1fr)); "
                     "gap: clamp(1px, 0.25vw, 4px); align-items: stretch;"
                 ):
-                    ui.label("")
+                    gradient = ", ".join(
+                        VOICE_COLOURS.values()
+                    )
+                    ui.button(
+                        icon="refresh",
+                        color="transparent",
+                        on_click=self._reset_weighting,
+                    ).style(
+                        "width: 1.75rem; height: 1.75rem; min-width: 0; "
+                        "padding: 0; margin: auto; "
+                        "background-color: transparent !important; "
+                        f"background-image: linear-gradient(90deg, {gradient}) !important; "
+                        "color: white !important;"
+                    )
                     for column in range(self.columns):
-                        ui.label(str(column + 1)).classes("text-center")
+                        ui.button(
+                            str(column + 1),
+                            color=NONE_COLOUR,
+                            on_click=partial(self._none_rc, column=column)
+                        ).classes("w-full text-center")
 
                     for display_row in range(self.rows):
                         row = self.rows - display_row - 1
                         assignments = self.assignments[row]
                         row_name = chr(ord("A") + display_row)
-                        ui.label(row_name).classes("text-center")
+                        ui.button(
+                            row_name,
+                            color=NONE_COLOUR,
+                            on_click=partial(self._none_rc, row=row),
+                        ).props("dense").classes("w-full h-full text-center")
                         for column, assignment in enumerate(assignments):
                             text = VOICE_PRETTY_NAMES.get(assignment, "None")
-                            colour = VOICE_COLOURS.get(assignment, "#6b7280")
+                            colour = VOICE_COLOURS.get(assignment, NONE_COLOUR)
                             ui.button(
                                 text,
                                 color=colour,
